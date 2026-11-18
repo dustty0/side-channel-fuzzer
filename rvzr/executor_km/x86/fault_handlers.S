@@ -89,6 +89,7 @@ ERROR: Nested fault detected\n"
 .global \name\()_\id
 .balign 16
 \name\()_\id:
+    endbr64
     push 0                // push dummy error code for stack normalization
     mov r13, 0x\id        // set exception ID in r13
     jmp \name             // jump to main handler
@@ -99,6 +100,7 @@ ERROR: Nested fault detected\n"
 .global \name\()_\id
 .balign 16
 \name\()_\id:
+    endbr64
     mov r13, 0x\id        // set exception ID in r13 (error code already on stack)
     jmp \name             // jump to main handler
 .endm
@@ -121,6 +123,7 @@ ERROR: Nested fault detected\n"
 .global test_case_handler
 .balign 4096
 test_case_handler:
+    endbr64
     // just in case, disable interrupts
     cli
 
@@ -164,6 +167,7 @@ test_case_handler:
 .global bubble_handler
 .balign 4096
 bubble_handler:
+    endbr64
     // just in case, disable interrupts
     cli
 
@@ -212,6 +216,7 @@ bubble_handler:
 .global nmi_handler
 .balign 4096
 nmi_handler:
+    endbr64
     // just in case, disable interrupts
     cli
 
@@ -239,6 +244,7 @@ nmi_handler:
 .global nested_fault_handler
 .balign 4096
 nested_fault_handler:
+    endbr64
     // just in case, disable interrupts
     cli
 

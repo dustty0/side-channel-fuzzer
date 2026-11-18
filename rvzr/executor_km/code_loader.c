@@ -127,8 +127,9 @@ static int load_section_main(void)
                 break;
             }
 
-            // set the fault handler to the default one (end of the main actor)
-            fault_handler = (char *)&dest[dest_cursor];
+            // Point the IDT at the expanded macro body.  Its first instruction is ENDBR64;
+            // the inline code location starts with a JMP and is not a valid IBT target.
+            fault_handler = (char *)&macro_dest[macros_cursor];
 
             // expand the macro for the default fault handler
             tc_symbol_entry_t measurement_end = (tc_symbol_entry_t){

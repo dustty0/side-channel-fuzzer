@@ -353,8 +353,11 @@ static inline size_t start_macro_fault_handler(macro_args_t args, uint8_t *dest)
     size_t cursor = 0;
     ASSERT(args.owner == 0, "inject_macro_configurable_part");
 
-    // Set new global address to the fault handler
-    fault_handler = (char *)((uint64_t)dest + cursor);
+    // IDT delivery with supervisor IBT enabled requires an ENDBR64 landing pad.
+    APPEND_BYTES_TO_DEST(0xf3, 0x0f, 0x1e, 0xfa);
+
+    // Set new global address to the ENDBR64 at the start of the fault handler.
+    fault_handler = (char *)dest;
 
     // Ensure that RSP, R14, and R15 are set to correct values after (potential) actor switch
     cursor += update_mem_base_and_sp(0, dest, cursor);
@@ -385,6 +388,8 @@ static inline size_t start_macro_fault_handler(macro_args_t args, uint8_t *dest)
 static inline size_t start_macro_fault_handler_with_measurement(macro_args_t args, uint8_t *dest)
 {
     size_t cursor = 0;
+    // The default fault handler is also installed directly in the custom IDT.
+    APPEND_BYTES_TO_DEST(0xf3, 0x0f, 0x1e, 0xfa);
     cursor += update_r14(args.arg1, dest, cursor);
     cursor += update_r15(args.arg1, dest, cursor);
     return cursor;
