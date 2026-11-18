@@ -6,6 +6,8 @@
 
 #include <linux/kernel.h>
 #include <linux/mm.h>
+#include <linux/slab.h>
+#include <linux/smp.h>
 #include <linux/vmalloc.h>
 
 #include "actor.h"
@@ -17,6 +19,7 @@
 #include "page_tables_host.h"
 
 #if defined(ARCH_X86_64)
+#include <asm/pgtable.h>
 #include <asm/pgtable_types.h> // _PAGE_PSE
 #include <asm/special_insns.h> // read_cr3_pa()
 #elif defined(ARCH_ARM)
@@ -35,6 +38,29 @@ sandbox_pteps_t *sandbox_pteps;
 
 static sandbox_ptes_t *orig_ptes;
 static pte_t_ *faulty_ptes = NULL;
+
+#if defined(ARCH_X86_64)
+typedef struct {
+    uint64_t va;
+    pte_t *ptep;
+    pte_t original;
+} code_pte_state_t;
+
+static code_pte_state_t *code_pte_state;
+static size_t code_pte_state_n_pages;
+
+static void invalidate_code_page_on_cpu(void *info)
+{
+    uint64_t va = *(uint64_t *)info;
+    native_page_invalidate(va);
+}
+
+static void invalidate_code_tlbs(code_pte_state_t *state, size_t n_pages)
+{
+    for (size_t i = 0; i < n_pages; i++)
+        on_each_cpu(invalidate_code_page_on_cpu, &state[i].va, 1);
+}
+#endif
 
 // =================================================================================================
 // Kernel top-level page-table base resolution
@@ -210,6 +236,79 @@ pte_t *get_pte(uint64_t hva)
 /// @return 0 on success, negative errno if a PTE is missing or the update did not take effect
 int set_code_area_executable(uint64_t base_va, size_t n_pages)
 {
+#if defined(ARCH_X86_64)
+    code_pte_state_t *state;
+    size_t updated_pages = 0;
+    int err = 0;
+
+    if (code_pte_state) {
+        PRINT_ERR("set_code_area_executable: a code mapping is already active\n");
+        return -EBUSY;
+    }
+
+    state = kcalloc(n_pages, sizeof(*state), GFP_KERNEL);
+    if (!state)
+        return -ENOMEM;
+
+    // Validate and snapshot every entry before modifying any of them.  The
+    // vmalloc code area must use ordinary 4 KiB leaves; lookup_address() is
+    // the kernel's exported x86 page-table walker and avoids depending on a
+    // task's current CR3 or on private page-table layout details.
+    for (size_t i = 0; i < n_pages; i++) {
+        uint64_t va = base_va + i * PAGE_SIZE;
+        unsigned int level = PG_LEVEL_NONE;
+        pte_t *ptep = lookup_address((unsigned long)va, &level);
+
+        if (!ptep || level != PG_LEVEL_4K) {
+            PRINT_ERR("set_code_area_executable: code page %zu has no 4 KiB PTE\n", i);
+            err = -ENODEV;
+            goto out_free;
+        }
+
+        state[i].va = va;
+        state[i].ptep = ptep;
+        state[i].original = READ_ONCE(*ptep);
+        if (!pte_present(state[i].original)) {
+            PRINT_ERR("set_code_area_executable: code page %zu is not present\n", i);
+            err = -ENODEV;
+            goto out_free;
+        }
+    }
+
+    for (size_t i = 0; i < n_pages; i++) {
+        set_pte(state[i].ptep, pte_mkexec(state[i].original));
+        updated_pages++;
+    }
+
+    // The mapping is in the global kernel address space.  Invalidate the
+    // changed VA on every online CPU rather than assuming that no remote CPU
+    // has observed it.  __flush_tlb_all() is restricted to KVM modules on
+    // recent Fedora kernels, while on_each_cpu() is available to GPL modules.
+    invalidate_code_tlbs(state, n_pages);
+
+    for (size_t i = 0; i < n_pages; i++) {
+        if (!pte_exec(READ_ONCE(*state[i].ptep))) {
+            PRINT_ERR("set_code_area_executable: code page %zu is still NX\n", i);
+            err = -ENODEV;
+            goto rollback;
+        }
+    }
+
+    code_pte_state = state;
+    code_pte_state_n_pages = n_pages;
+    return 0;
+
+rollback:
+    while (updated_pages > 0) {
+        updated_pages--;
+        set_pte(state[updated_pages].ptep, state[updated_pages].original);
+    }
+    invalidate_code_tlbs(state, n_pages);
+out_free:
+    kfree(state);
+    return err;
+
+#elif defined(ARCH_ARM)
     for (size_t i = 0; i < n_pages; i++) {
         uint64_t va = base_va + i * PAGE_SIZE;
         pte_t *ptep = get_pte(va);
@@ -219,11 +318,7 @@ int set_code_area_executable(uint64_t base_va, size_t n_pages)
         }
 
         pte_t_ *pte = (pte_t_ *)&ptep->pte;
-#if defined(ARCH_X86_64)
-        pte->execute_disable = 0;
-#elif defined(ARCH_ARM)
         pte->privileged_execute_never = 0;
-#endif
         // a local invalidation is sufficient because the VA range is freshly allocated, hence no
         // other CPU can have cached a translation for it
         native_page_invalidate(va);
@@ -231,17 +326,34 @@ int set_code_area_executable(uint64_t base_va, size_t n_pages)
         // sanity check: re-read the entry to confirm that the update took effect
         uint64_t updated = READ_ONCE(ptep->pte);
         pte_t_ *check = (pte_t_ *)&updated;
-#if defined(ARCH_X86_64)
-        bool executable = !check->execute_disable;
-#elif defined(ARCH_ARM)
         bool executable = !check->privileged_execute_never;
-#endif
         if (!executable) {
             PRINT_ERR("set_code_area_executable: code page %zu (VA 0x%llx) is not executable\n", i,
                       va);
             return -ENODEV;
         }
     }
+    return 0;
+#endif
+}
+
+/// @brief Restore the original permissions of the vmalloc code area.
+/// @details On x86 this reverses the direct PTE edits before vfree() removes
+/// the mapping.  ARM retains the pre-existing behavior for now.
+int restore_code_area_permissions(void)
+{
+#if defined(ARCH_X86_64)
+    if (!code_pte_state)
+        return 0;
+
+    for (size_t i = 0; i < code_pte_state_n_pages; i++)
+        set_pte(code_pte_state[i].ptep, code_pte_state[i].original);
+
+    invalidate_code_tlbs(code_pte_state, code_pte_state_n_pages);
+    kfree(code_pte_state);
+    code_pte_state = NULL;
+    code_pte_state_n_pages = 0;
+#endif
     return 0;
 }
 

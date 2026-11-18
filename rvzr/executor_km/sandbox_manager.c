@@ -45,6 +45,11 @@ static void safe_free_util_data(void)
 /// @brief Free code allocation (vmalloc)
 static void safe_free_code(void)
 {
+    if (code) {
+        int err = restore_code_area_permissions();
+        if (err)
+            PRINT_ERR("Failed to restore code area permissions: %d\n", err);
+    }
     SAFE_VFREE(code);
     loaded_test_case_entry = NULL;
 }
