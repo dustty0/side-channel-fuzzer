@@ -161,7 +161,9 @@ static inline void epilogue_dbg_gpr(void)
 
 static void main_segment_template(void)
 {
-    asm volatile(".quad " xstr(TEMPLATE_START));
+    // code_loader copies from immediately after TEMPLATE_START and invokes the
+    // resulting buffer through a function pointer, so it must be an IBT target.
+    asm volatile(".quad " xstr(TEMPLATE_START) "\nendbr64");
     prologue();
 
     SET_REGISTER_FROM_INPUT();
@@ -184,7 +186,7 @@ static void main_segment_template(void)
 
 static void main_segment_template_dbg_gpr(void)
 {
-    asm volatile(".quad " xstr(TEMPLATE_START));
+    asm volatile(".quad " xstr(TEMPLATE_START) "\nendbr64");
     prologue();
 
     SET_REGISTER_FROM_INPUT();
