@@ -358,7 +358,7 @@ static int set_vmcb_control(vmcb_t *vmcb_hva, uint64_t actor_id)
     ctrl->int_vector = 0;
     ctrl->int_state = 0;
 
-    ctrl->nested_ctl |= SVM_NESTED_CTL_NP_ENABLE;
+    ctrl->nested_ctl |= RVZR_SVM_NESTED_CTL_NP_ENABLE;
     ctrl->nested_ctl |= _BITULL(6); // Read-only guest page tables
 
     ctrl->nested_cr3 = (((uint64_t)ept_ptr[actor_id].paddr) << 12);

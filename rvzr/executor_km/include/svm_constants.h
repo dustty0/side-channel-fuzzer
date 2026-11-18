@@ -45,6 +45,7 @@
 // inconsistent between versions
 
 // We define VMCB bits here, as the definitions within the kernel are not stable between versions
+#define RVZR_SVM_NESTED_CTL_NP_ENABLE (1ULL << 0)
 #define VMCB_INTERCEPT_CR0_READ  0
 #define VMCB_INTERCEPT_CR3_READ  3
 #define VMCB_INTERCEPT_CR4_READ  4
