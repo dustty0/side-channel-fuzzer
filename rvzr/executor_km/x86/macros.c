@@ -658,6 +658,8 @@ static inline size_t start_macro_landing_k2u(macro_args_t args, uint8_t *dest)
 static inline size_t start_macro_landing_u2k(macro_args_t args, uint8_t *dest)
 {
     size_t cursor = 0;
+    // SYSCALL enters through MSR_LSTAR; supervisor IBT requires ENDBR64 there.
+    APPEND_BYTES_TO_DEST(0xf3, 0x0f, 0x1e, 0xfa);
     cursor += update_r14(args.owner, dest, cursor);
     // rsp is automatically restored by syscall instruction
 
